@@ -1,33 +1,30 @@
 import "dotenv/config";
-
+import swagger from "@fastify/swagger";
+import swaggerUI from "@fastify/swagger-ui";
 import Fastify from "fastify";
 import Groq from "groq-sdk";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { fileURLToPath } from "node:url";
 
+
 const app = Fastify({ logger: true });
 
-await app.register(
-  import("@fastify/swagger").then((m) => m.default),
-  {
-    openapi: {
-      info: {
-        title: "Weather Chatbot API",
-        description: "Ask questions using Groq and MCP tools",
-        version: "1.0.0",
-      },
-      servers: [{ url: "http://127.0.0.1:3000" }],
+await app.register(swagger, {
+  openapi: {
+    info: {
+      title: "Weather Chatbot API",
+      description: "Ask questions using Groq and MCP tools",
+      version: "1.0.0",
     },
+    servers: [{ url: "http://127.0.0.1:3000" }],
   },
-);
+});
 
-await app.register(
-  import("@fastify/swagger-ui").then((m) => m.default),
-  {
-    routePrefix: "/docs",
-  },
-);
+await app.register(swaggerUI, {
+  routePrefix: "/docs",
+});
+
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -47,6 +44,38 @@ const transport = new StdioClientTransport({
 
 let mcpTools = [];
 
+function parseWeatherResult(result) {
+  if (result.isError) {
+    return null;
+  }
+
+  const text = (result.content || [])
+    .filter((item) => item.type === "text")
+    .map((item) => item.text)
+    .join("\n");
+
+  try {
+    const weather = JSON.parse(text);
+
+    if (
+      typeof weather.city === "string" &&
+      typeof weather.country === "string" &&
+      typeof weather.temperatureC === "number" &&
+      typeof weather.feelsLikeC === "number" &&
+      typeof weather.humidityPercent === "number" &&
+      typeof weather.windSpeedKmh === "number" &&
+      typeof weather.precipitationMm === "number" &&
+      typeof weather.condition === "string"
+    ) {
+      return weather;
+    }
+  } catch {
+    // The tool may return a non-JSON error message.
+  }
+
+  return null;
+}
+
 // Execute one user's request using Groq + MCP.
 async function answerQuestion(query) {
   const messages = [
@@ -63,6 +92,7 @@ async function answerQuestion(query) {
   ];
 
   const maxRounds = 5;
+  let weather = null;
 
   for (let round = 0; round < maxRounds; round++) {
     // Ask Groq to answer or select a tool.
@@ -87,7 +117,10 @@ async function answerQuestion(query) {
 
     // No tool call means Groq has generated its final answer.
     if (!assistantMessage.tool_calls?.length) {
-      return assistantMessage.content || "";
+      return {
+        answer: assistantMessage.content || "",
+        weather,
+      };
     }
 
     // Execute each requested tool through MCP.
@@ -127,6 +160,10 @@ async function answerQuestion(query) {
           name,
           arguments: args,
         });
+
+        if (name === "get_weather") {
+          weather = parseWeatherResult(result);
+        }
 
         output = (result.content || [])
           .map((item) =>
@@ -176,7 +213,6 @@ app.post(
             minLength: 1,
             maxLength: 2000,
             description: "The user's question",
-            example: "What's the weather in Bengaluru?",
           },
         },
       },
@@ -185,8 +221,32 @@ app.post(
           type: "object",
           properties: {
             answer: { type: "string" },
+            weather: {
+              type: ["object", "null"],
+              properties: {
+                city: { type: "string" },
+                country: { type: "string" },
+                temperatureC: { type: "number" },
+                feelsLikeC: { type: "number" },
+                humidityPercent: { type: "number" },
+                windSpeedKmh: { type: "number" },
+                precipitationMm: { type: "number" },
+                condition: { type: "string" },
+              },
+              required: [
+                "city",
+                "country",
+                "temperatureC",
+                "feelsLikeC",
+                "humidityPercent",
+                "windSpeedKmh",
+                "precipitationMm",
+                "condition",
+              ],
+              additionalProperties: false,
+            },
           },
-          required: ["answer"],
+          required: ["answer", "weather"],
         },
         400: {
           type: "object",
@@ -213,11 +273,7 @@ app.post(
     }
 
     try {
-      const answer = await answerQuestion(query);
-
-      return {
-        answer,
-      };
+      return await answerQuestion(query);
     } catch (error) {
       request.log.error({ err: error }, "Failed to answer question");
 
