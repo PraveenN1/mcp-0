@@ -1,0 +1,18 @@
+Output: Phase 1
+
+>> node client.js Bengaluru
+
+Discovered tools:
+- get_weather: Get the current weather for a city. Use this when the user asks about current weather conditions.
+
+Weather result:
+{
+  "city": "Bengaluru",
+  "country": "India",
+  "temperatureC": 20,
+  "feelsLikeC": 22.6,
+  "humidityPercent": 97,
+  "windSpeedKmh": 7.2,
+  "precipitationMm": 0.7,
+  "condition": "Moderate rain showers"
+}
