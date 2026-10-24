@@ -1,10 +1,18 @@
+import "dotenv/config";
+import Groq from "groq-sdk";
 
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { fileURLToPath } from "node:url";
 
-const client = new Client({
-  name: "weather-demo-client",
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+});
+
+const MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+
+const mcpClient = new Client({
+  name: "weather-ai-client",
   version: "1.0.0",
 });
 
@@ -14,45 +22,147 @@ const transport = new StdioClientTransport({
 });
 
 async function main() {
+  if (!process.env.GROQ_API_KEY) {
+    throw new Error("Missing GROQ_API_KEY in .env");
+  }
+
   try {
-    // Connect to the MCP server.
-    await client.connect(transport);
+    // 1. Connect to the MCP server.
+    await mcpClient.connect(transport);
 
-    // Discover the server's tools.
-    const { tools } = await client.listTools();
+    // 2. Discover available MCP tools.
+    const { tools: mcpTools } = await mcpClient.listTools();
 
-    console.log("\nDiscovered tools:");
+    console.log("Discovered MCP tools:", mcpTools.map(t => t.name));
 
-    for (const tool of tools) {
-      console.log(`- ${tool.name}: ${tool.description}`);
-    }
-
-    // Call the discovered tool directly.
-    const result = await client.callTool({
-      name: "get_weather",
-      arguments: {
-        city: process.argv[2] ?? "Bengaluru",
+    // 3. Convert MCP tool definitions into Groq tool definitions.
+    const groqTools = mcpTools.map(tool => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.inputSchema,
       },
-    });
+    }));
 
-    console.log("\nWeather result:");
+    // 4. Get the user's natural-language request.
+    const query =
+      process.argv.slice(2).join(" ") ||
+      "What's the current weather in Bengaluru?";
 
-    for (const item of result.content ?? []) {
-      if (item.type === "text") {
-        console.log(item.text);
+    const messages = [
+      {
+        role: "system",
+        content:
+          "You are a helpful weather assistant. " +
+          "Use the get_weather tool when the user asks for current weather. " +
+          "Never invent live weather data. Answer concisely using tool results.",
+      },
+      {
+        role: "user",
+        content: query,
+      },
+    ];
+
+    // 5. Let the LLM choose tools and handle tool results.
+    const MAX_ROUNDS = 5;
+
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      const completion = await groq.chat.completions.create({
+        model: MODEL,
+        messages,
+        tools: groqTools,
+        tool_choice: "auto",
+        temperature: 0.2,
+      });
+
+      const assistantMessage = completion.choices[0].message;
+
+      // Preserve the assistant's response, including tool calls.
+      messages.push(assistantMessage);
+
+      // No tool calls means the model has produced its final answer.
+      if (!assistantMessage.tool_calls?.length) {
+        console.log("\nAssistant:", assistantMessage.content);
+        return;
       }
+
+      // 6. Execute each requested tool through the MCP client.
+      for (const toolCall of assistantMessage.tool_calls) {
+        const name = toolCall.function.name;
+
+        let args;
+
+        try {
+          args = JSON.parse(toolCall.function.arguments || "{}");
+        } catch {
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: "Error: Invalid JSON arguments.",
+          });
+          continue;
+        }
+
+        const tool = mcpTools.find(item => item.name === name);
+
+        if (!tool) {
+          messages.push({
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: `Error: Unknown tool "${name}".`,
+          });
+          continue;
+        }
+
+        console.log(`\nLLM selected tool: ${name}`);
+        console.log("Arguments:", args);
+
+        let toolOutput;
+
+        try {
+          const result = await mcpClient.callTool({
+            name,
+            arguments: args,
+          });
+
+          toolOutput = (result.content || [])
+            .map(item =>
+              item.type === "text"
+                ? item.text
+                : JSON.stringify(item)
+            )
+            .join("\n");
+
+          if (result.isError) {
+            toolOutput = `Tool error: ${toolOutput}`;
+          }
+
+          if (!toolOutput && result.structuredContent) {
+            toolOutput = JSON.stringify(result.structuredContent);
+          }
+        } catch (error) {
+          toolOutput = `Tool execution failed: ${error.message}`;
+        }
+
+        // 7. Return the tool result to Groq.
+        messages.push({
+          role: "tool",
+          tool_call_id: toolCall.id,
+          content: toolOutput || "The tool returned no content.",
+        });
+      }
+
+      // The loop continues, allowing the LLM to process tool results.
     }
 
-    if (result.isError) {
-      console.error("The tool reported an error.");
-      process.exitCode = 1;
-    }
+    throw new Error("Maximum tool-call rounds exceeded.");
   } finally {
-    await client.close();
+    await mcpClient.close();
   }
 }
 
-main().catch((error) => {
-  console.error("Client failed:", error);
+main().catch(error => {
+  console.error("Application failed:", error.message);
   process.exitCode = 1;
 });

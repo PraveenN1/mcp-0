@@ -16,3 +16,14 @@ Weather result:
   "precipitationMm": 0.7,
   "condition": "Moderate rain showers"
 }
+----------------------------------------------------------------------------------
+Output: Phase 2
+
+>> node client.js "What's the weather in Bangalore?"
+Discovered MCP tools: [ 'get_weather' ]
+
+LLM selected tool: get_weather
+Arguments: { city: 'Bangalore' }
+
+Assistant: **Bangalore (Pakistan)** – 26.4 °C (feels like 29.6 °C)  
+Clear sky, 69 % humidity, wind 5.6 km/h, no precipitation.
