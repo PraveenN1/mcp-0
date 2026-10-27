@@ -27,7 +27,7 @@ server.js (MCP server)
 api.js returns { answer, weather }
 ```
 
-`api.js` starts `server.js` as a child process over MCP stdio, discovers its tools once during startup, and keeps that MCP connection for subsequent requests. `server.js` owns weather lookup and data normalization; it does not expose an HTTP port. `client.js` is a command-line example/smoke test of the same Groq-to-MCP tool-calling flow.
+`api.js` starts `server.js` as a child process over MCP stdio, discovers its tools once during startup, and keeps that MCP connection for subsequent requests. `server.js` owns weather lookup and data normalization, including a next-24-hours rain forecast; it does not expose an HTTP port. `client.js` is a command-line example/smoke test of the same Groq-to-MCP tool-calling flow.
 
 ## Prerequisites
 
@@ -86,7 +86,14 @@ Example successful response:
     "humidityPercent": 98,
     "windSpeedKmh": 2.7,
     "precipitationMm": 1,
-    "condition": "Moderate rain showers"
+    "condition": "Moderate rain showers",
+    "rainForecast": {
+      "periodStart": "2026-10-26T12:00",
+      "periodEnd": "2026-10-27T11:00",
+      "willRain": true,
+      "maxPrecipitationProbabilityPercent": 80,
+      "totalPrecipitationMm": 4.2
+    }
   }
 }
 ```
@@ -115,7 +122,7 @@ Responses:
 - `400 Bad Request`: invalid JSON, a missing query, or an empty query
 - `502 Bad Gateway`: Groq, MCP, or weather-processing failure
 
-The structured `Weather` object contains `city`, `country`, `temperatureC`, `feelsLikeC`, `humidityPercent`, `windSpeedKmh`, `precipitationMm`, and `condition`.
+The structured `Weather` object contains current conditions plus `rainForecast`, which summarizes the next 24 hours for the requested city. `rainForecast.willRain` is based on predicted precipitation greater than zero; its time range is given by `periodStart` and `periodEnd` in the city's local timezone.
 
 ## Run the command-line client
 
@@ -132,7 +139,7 @@ Without an argument, it uses Bengaluru as its default query.
 | File | Responsibility |
 | --- | --- |
 | `api.js` | Fastify API, OpenAPI/Swagger UI, Groq orchestration, MCP client, and HTTP response shaping. |
-| `server.js` | MCP `get_weather` tool; geocodes a city and fetches/normalizes current weather from Open-Meteo. |
+| `server.js` | MCP `get_weather` tool; geocodes a city and fetches/normalizes current weather plus a next-24-hour rain forecast from Open-Meteo. |
 | `client.js` | Standalone terminal client for the Groq + MCP flow. |
 
 ## Troubleshooting

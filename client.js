@@ -10,6 +10,7 @@ const groq = new Groq({
 });
 
 const MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+const WEATHER_QUERY_PATTERN = /\b(weather|rain|precipitation|forecast)\b/i;
 
 const mcpClient = new Client({
   name: "weather-ai-client",
@@ -49,13 +50,14 @@ async function main() {
     const query =
       process.argv.slice(2).join(" ") ||
       "What's the current weather in Bengaluru?";
+    const requiresWeatherTool = WEATHER_QUERY_PATTERN.test(query);
 
     const messages = [
       {
         role: "system",
         content:
           "You are a helpful weather assistant. " +
-          "Use the get_weather tool when the user asks for current weather. " +
+          "Use get_weather for current weather, rain, precipitation, and forecast questions. " +
           "Never invent live weather data. Answer concisely using tool results.",
       },
       {
@@ -72,7 +74,9 @@ async function main() {
         model: MODEL,
         messages,
         tools: groqTools,
-        tool_choice: "auto",
+        tool_choice: round === 0 && requiresWeatherTool
+          ? { type: "function", function: { name: "get_weather" } }
+          : "auto",
         temperature: 0.2,
       });
 

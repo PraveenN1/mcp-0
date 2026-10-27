@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 
 const app = Fastify({ logger: true });
-
+  
 await app.register(swagger, {
   openapi: {
     info: {
@@ -31,6 +31,7 @@ const groq = new Groq({
 });
 
 const MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
+const WEATHER_QUERY_PATTERN = /\b(weather|rain|precipitation|forecast)\b/i;
 
 const mcpClient = new Client({
   name: "weather-chatbot-client",
@@ -65,7 +66,13 @@ function parseWeatherResult(result) {
       typeof weather.humidityPercent === "number" &&
       typeof weather.windSpeedKmh === "number" &&
       typeof weather.precipitationMm === "number" &&
-      typeof weather.condition === "string"
+      typeof weather.condition === "string" &&
+      typeof weather.rainForecast?.periodStart === "string" &&
+      typeof weather.rainForecast.periodEnd === "string" &&
+      typeof weather.rainForecast.willRain === "boolean" &&
+      typeof weather.rainForecast.maxPrecipitationProbabilityPercent ===
+        "number" &&
+      typeof weather.rainForecast.totalPrecipitationMm === "number"
     ) {
       return weather;
     }
@@ -78,11 +85,13 @@ function parseWeatherResult(result) {
 
 // Execute one user's request using Groq + MCP.
 async function answerQuestion(query) {
+  const requiresWeatherTool = WEATHER_QUERY_PATTERN.test(query);
   const messages = [
     {
       role: "system",
       content:
-        "You are a helpful assistant. Use available tools when needed. " +
+        "You are a helpful weather assistant. " +
+        "Always use get_weather for questions about weather, rain, precipitation, or forecasts for a city. " +
         "Never invent weather data. Answer the user concisely using actual tool results.",
     },
     {
@@ -107,7 +116,9 @@ async function answerQuestion(query) {
           parameters: tool.inputSchema,
         },
       })),
-      tool_choice: "auto",
+      tool_choice: round === 0 && requiresWeatherTool
+        ? { type: "function", function: { name: "get_weather" } }
+        : "auto",
       temperature: 0.2,
     });
 
@@ -232,6 +243,26 @@ app.post(
                 windSpeedKmh: { type: "number" },
                 precipitationMm: { type: "number" },
                 condition: { type: "string" },
+                rainForecast: {
+                  type: "object",
+                  properties: {
+                    periodStart: { type: "string" },
+                    periodEnd: { type: "string" },
+                    willRain: { type: "boolean" },
+                    maxPrecipitationProbabilityPercent: {
+                      type: "number",
+                    },
+                    totalPrecipitationMm: { type: "number" },
+                  },
+                  required: [
+                    "periodStart",
+                    "periodEnd",
+                    "willRain",
+                    "maxPrecipitationProbabilityPercent",
+                    "totalPrecipitationMm",
+                  ],
+                  additionalProperties: false,
+                },
               },
               required: [
                 "city",
@@ -242,6 +273,7 @@ app.post(
                 "windSpeedKmh",
                 "precipitationMm",
                 "condition",
+                "rainForecast",
               ],
               additionalProperties: false,
             },

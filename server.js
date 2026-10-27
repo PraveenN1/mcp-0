@@ -27,11 +27,30 @@ const weatherDescriptions = {
   95: "Thunderstorm",
 };
 
+async function findCity(city) {
+  const geoUrl = new URL("https://geocoding-api.open-meteo.com/v1/search");
+  geoUrl.search = new URLSearchParams({
+    name: city,
+    count: "1",
+    language: "en",
+    format: "json",
+  });
+
+  const geoResponse = await fetch(geoUrl);
+
+  if (!geoResponse.ok) {
+    throw new Error("City lookup service failed");
+  }
+
+  const geoData = await geoResponse.json();
+  return geoData.results?.[0] ?? null;
+}
+
 server.registerTool(
   "get_weather",
   {
     description:
-      "Get the current weather for a city. Use this when the user asks about current weather conditions.",
+      "Get current weather and a next-24-hours rain forecast for a city. Use this for questions about weather, rain, precipitation, or forecasts.",
     inputSchema: {
       city: z.string().min(1).describe("Name of the city"),
     },
@@ -39,25 +58,7 @@ server.registerTool(
   async ({ city }) => {
     try {
       // 1. Find the city's coordinates.
-      const geoUrl = new URL(
-        "https://geocoding-api.open-meteo.com/v1/search"
-      );
-
-      geoUrl.search = new URLSearchParams({
-        name: city,
-        count: "1",
-        language: "en",
-        format: "json",
-      });
-
-      const geoResponse = await fetch(geoUrl);
-
-      if (!geoResponse.ok) {
-        throw new Error("City lookup service failed");
-      }
-
-      const geoData = await geoResponse.json();
-      const place = geoData.results?.[0];
+      const place = await findCity(city);
 
       if (!place) {
         return {
@@ -69,7 +70,7 @@ server.registerTool(
         };
       }
 
-      // 2. Fetch the current weather.
+      // 2. Fetch current weather and enough hourly data for the next 24 hours.
       const weatherUrl = new URL(
         "https://api.open-meteo.com/v1/forecast"
       );
@@ -79,6 +80,8 @@ server.registerTool(
         longitude: String(place.longitude),
         current:
           "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
+        hourly: "precipitation_probability,precipitation",
+        forecast_days: "2",
         timezone: "auto",
       });
 
@@ -90,6 +93,25 @@ server.registerTool(
 
       const weatherData = await weatherResponse.json();
       const current = weatherData.current;
+      const currentHourIndex = Math.max(
+        0,
+        weatherData.hourly.time.findIndex((time) => time >= current.time),
+      );
+      const next24Hours = weatherData.hourly.time
+        .slice(currentHourIndex, currentHourIndex + 24)
+        .map((time, index) => ({
+          time,
+          precipitationMm:
+            weatherData.hourly.precipitation[currentHourIndex + index],
+          precipitationProbabilityPercent:
+            weatherData.hourly.precipitation_probability[
+              currentHourIndex + index
+            ],
+        }));
+      const totalPrecipitationMm = next24Hours.reduce(
+        (total, hour) => total + hour.precipitationMm,
+        0,
+      );
 
       // 3. Return the result through MCP.
       const result = {
@@ -103,6 +125,16 @@ server.registerTool(
         condition:
           weatherDescriptions[current.weather_code] ??
           "Unknown conditions",
+        rainForecast: {
+          periodStart: next24Hours[0]?.time ?? current.time,
+          periodEnd: next24Hours.at(-1)?.time ?? current.time,
+          willRain: next24Hours.some((hour) => hour.precipitationMm > 0),
+          maxPrecipitationProbabilityPercent: Math.max(
+            0,
+            ...next24Hours.map((hour) => hour.precipitationProbabilityPercent),
+          ),
+          totalPrecipitationMm,
+        },
       };
 
       return {
